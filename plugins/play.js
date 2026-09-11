@@ -28,7 +28,7 @@ cmd({
 
             if (!data.status || !data.cdn) {
                 await m.react('❌').catch(() => {});
-                return m.reply(`│ Can't download that YouTube link.\n│ Your link is probably broken or private.\n│ Even I have limits, unlike your stupidity.\n╰───────────────\n> ©𝐏𝐨𝐰𝐞𝐫𝐞𝐝 𝐁𝐲 𝐱𝐡_𝐜𝐥𝐢𝐧𝐭𝐨𝐧`);
+                return m.reply(`│ Can't download that YouTube link.\n│ Your link is probably broken or private.\n│ Even I have limits, unlike your stupidity.\n╰───────────────\n> ©❤️‍🩹𝐏𝐎𝐖𝐄𝐑𝐄𝐃 𝐁𝐘 𝐏𝐎𝐏𝐊𝐈𝐃`);
             }
 
             audioUrl = data.cdn;
@@ -38,7 +38,7 @@ cmd({
         } else {
             if (query.length > 100) {
                 await m.react('❌').catch(() => {});
-                return m.reply("│ Song title longer than my patience. 100 chars MAX!\n╰───────────────\n> ©𝐏𝐨𝐰𝐞𝐫𝐞𝐝 𝐁𝐲 𝐱𝐡_𝐜𝐥𝐢𝐧𝐭𝐨𝐧");
+                return m.reply("│ Song title longer than my patience. 100 chars MAX!\n╰───────────────\n> ©❤️‍🩹𝐏𝐎𝐖𝐄𝐑𝐄𝐃 𝐁𝐘 𝐏𝐎𝐏𝐊𝐈𝐃");
             }
 
             const response = await fetch(`https://apiziaul.vercel.app/api/downloader/ytplaymp3?query=${encodeURIComponent(query)}`);
@@ -46,7 +46,7 @@ cmd({
 
             if (!data.status || !data.result?.downloadUrl) {
                 await m.react('❌').catch(() => {});
-                return m.reply(`│ No song found for "${query}".\n│ Your music taste is as bad as your search skills.\n╰───────────────\n> ©𝐏𝐨𝐰𝐞𝐫𝐞𝐝 𝐁𝐲 𝐱𝐡_𝐜𝐥𝐢𝐧𝐭𝐨𝐧`);
+                return m.reply(`│ No song found for "${query}".\n│ Your music taste is as bad as your search skills.\n╰───────────────\n> ©❤️‍🩹𝐏𝐎𝐖𝐄𝐑𝐄𝐃 𝐁𝐘 𝐏𝐎𝐏𝐊𝐈𝐃`);
             }
 
             audioUrl = data.result.downloadUrl;
@@ -64,7 +64,7 @@ cmd({
             contextInfo: thumbnail ? {
                 externalAdReply: {
                     title: filename.substring(0, 30),
-                    body: "Toxic-MD",
+                    body: "Popkid Md",
                     thumbnailUrl: thumbnail,
                     sourceUrl: sourceUrl,
                     mediaType: 1,
@@ -83,6 +83,6 @@ cmd({
     } catch (error) {
         console.error('Play error:', error);
         await m.react('❌').catch(() => {});
-        await m.reply(`╭─❏ 「 PLAY ERROR」\n│ Play failed. The universe rejects your music taste.\n╰───────────────\n> ©𝐏𝐨𝐰𝐞𝐫𝐞𝐝 𝐁𝐲 𝐱𝐡_𝐜𝐥𝐢𝐧𝐭𝐨𝐧`);
+        await m.reply(`╭─❏ 「 PLAY ERROR」\n│ Play failed. The universe rejects your music taste.\n╰───────────────\n> ©❤️‍🩹𝐏𝐎𝐖𝐄𝐑𝐄𝐃 𝐁𝐘 𝐏𝐎𝐏𝐊𝐈𝐃`);
     }
 });
