@@ -4,18 +4,20 @@ const os = require('os');
 const crypto = require('crypto');
 const { execSync } = require('child_process');
 
-// ── GitHub configuration ──────────────────────────────────────────────────
+const { cmd } = require('../arslan');
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GITHUB CONFIG
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 const repoOwner = 'popkidultra';
 const repoName = 'POPKID-BOT';
 const branch = 'main';
 
-// ── Paths ────────────────────────────────────────────────────────────────
-const PROJECT_ROOT = path.resolve(__dirname, '..'); // plugins/ -> project root
+const PROJECT_ROOT = path.resolve(__dirname, '..');
 const COMMIT_FILE = path.join(PROJECT_ROOT, '.last_update_commit');
 
-// Anything matching these (exact match, or as a directory prefix) is NEVER
-// touched by the update: never overwritten, never deleted, never entered.
-// Extend this list if your real project has other credential/data folders.
+// Files/folders that must NEVER be replaced or deleted by an update.
 const PROTECTED_PATHS = [
     'config.js',
     '.env',
@@ -35,24 +37,17 @@ const PROTECTED_PATHS = [
     'media'
 ];
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// HELPERS
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 function isProtected(relPath) {
     const normalized = relPath.split(path.sep).join('/');
-    return PROTECTED_PATHS.some(p => normalized === p || normalized.startsWith(p + '/'));
-}
 
-// ── GitHub API helpers ──────────────────────────────────────────────────
-async function getLatestCommit() {
-    const res = await fetch(
-        `https://api.github.com/repos/${repoOwner}/${repoName}/commits/${branch}`,
-        { headers: { 'User-Agent': 'POPKID-BOT-Updater' } }
+    return PROTECTED_PATHS.some(item =>
+        normalized === item ||
+        normalized.startsWith(item + '/')
     );
-    if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
-    const data = await res.json();
-    return {
-        sha: data.sha,
-        message: (data.commit?.message || '').split('\n')[0], // first line only
-        date: data.commit?.committer?.date || data.commit?.author?.date || null
-    };
 }
 
 function getLocalCommit() {
@@ -67,266 +62,582 @@ function saveLocalCommit(sha) {
     fs.writeFileSync(COMMIT_FILE, sha, 'utf8');
 }
 
-// ── Download + extract ──────────────────────────────────────────────────
-async function downloadZip(destZipPath) {
-    const zipUrl = `https://github.com/${repoOwner}/${repoName}/archive/refs/heads/${branch}.zip`;
-    const res = await fetch(zipUrl, { headers: { 'User-Agent': 'POPKID-BOT-Updater' } });
-    if (!res.ok) throw new Error(`Failed to download update ZIP: ${res.status}`);
-    const buffer = Buffer.from(await res.arrayBuffer());
-    fs.writeFileSync(destZipPath, buffer);
-}
-
-function extractZip(zipPath, destDir) {
-    let AdmZip;
-    try {
-        AdmZip = require('adm-zip');
-    } catch (err) {
-        throw new Error('Missing dependency "adm-zip". Run: npm install adm-zip');
-    }
-    const zip = new AdmZip(zipPath);
-    zip.extractAllTo(destDir, true);
-
-    // GitHub zips extract into a single top-level folder, e.g. "POPKID-BOT-main/"
-    const entries = fs.readdirSync(destDir, { withFileTypes: true }).filter(e => e.isDirectory());
-    if (entries.length !== 1) {
-        throw new Error('Unexpected ZIP structure after extraction.');
-    }
-    return path.join(destDir, entries[0].name);
-}
-
-// ── Validation (BEFORE touching the real project) ─────────────────────────
-function validateExtractedSource(srcRoot) {
-    const requiredEntries = ['index.js', 'package.json'];
-    for (const entry of requiredEntries) {
-        if (!fs.existsSync(path.join(srcRoot, entry))) {
-            throw new Error(`Downloaded update is missing "${entry}" — aborting before applying anything.`);
-        }
-    }
-}
-
-// ── Recursive sync: copies new/changed files, removes files deleted    ──
-// ── upstream, and NEVER touches anything under a protected path.       ──
-function syncDirectory(srcDir, destDir, relPath = '') {
-    fs.mkdirSync(destDir, { recursive: true });
-
-    const srcEntries = fs.existsSync(srcDir) ? fs.readdirSync(srcDir, { withFileTypes: true }) : [];
-    const destEntries = fs.existsSync(destDir) ? fs.readdirSync(destDir, { withFileTypes: true }) : [];
-
-    // Remove files/folders that no longer exist upstream (skip protected paths)
-    for (const entry of destEntries) {
-        const entryRel = path.join(relPath, entry.name);
-        if (isProtected(entryRel)) continue;
-        const stillExists = srcEntries.some(e => e.name === entry.name);
-        if (!stillExists) {
-            fs.rmSync(path.join(destDir, entry.name), { recursive: true, force: true });
-            console.log(`🗑️ update: removed (deleted upstream) ${entryRel}`);
-        }
-    }
-
-    // Copy new/updated files from source
-    for (const entry of srcEntries) {
-        const entryRel = path.join(relPath, entry.name);
-        if (isProtected(entryRel)) {
-            console.log(`🛡️ update: skipped protected path ${entryRel}`);
-            continue;
-        }
-        const srcPath = path.join(srcDir, entry.name);
-        const destPath = path.join(destDir, entry.name);
-
-        if (entry.isDirectory()) {
-            syncDirectory(srcPath, destPath, entryRel);
-        } else {
-            fs.mkdirSync(path.dirname(destPath), { recursive: true });
-            fs.copyFileSync(srcPath, destPath);
-        }
-    }
-}
-
 function fileHash(filePath) {
     if (!fs.existsSync(filePath)) return null;
-    return crypto.createHash('sha1').update(fs.readFileSync(filePath)).digest('hex');
+
+    return crypto
+        .createHash('sha1')
+        .update(fs.readFileSync(filePath))
+        .digest('hex');
 }
 
-// ── Update lock ─────────────────────────────────────────────────────────
-// Prevents two "update" commands (or an accidental double-send) from
-// running the sync/restart logic at the same time and corrupting files.
 function isUpdateLocked() {
     return global.__popkidUpdateInProgress === true;
 }
+
 function setUpdateLock(value) {
     global.__popkidUpdateInProgress = value;
 }
 
-// ── Restart ────────────────────────────────────────────────────────────
-// IMPORTANT: most hosting panels (Pterodactyl and similar) run the bot as
-// the container's main (PID 1) process under a process supervisor that
-// watches that exact process and restarts it using your configured
-// "startup command" whenever it exits.
-//
-// The old approach here used to spawn() a detached child process and then
-// exit the parent. That works fine on a bare VPS with systemd/pm2, but
-// inside a panel's container it backfires: the moment the parent (PID 1)
-// exits, the container itself is torn down by the runtime, which kills
-// the freshly-spawned child right along with it. Net result: files get
-// updated, but the bot goes offline and stays offline until you manually
-// hit "restart" in the panel.
-//
-// The fix is to NOT try to relaunch ourselves. Just close the HTTP port
-// (if any) and exit cleanly — the panel's own supervisor sees the process
-// exit and restarts it using the startup command, which brings the bot
-// back up running the newly-updated code. This is simpler and it's what
-// panels are actually built to do.
-//
-// Make sure "Auto restart on stop/crash" (naming varies by panel) is
-// enabled, and that your startup command / exit-code handling treats a
-// clean `process.exit(0)` as something to restart on (some panels only
-// auto-restart on non-zero exit codes — if yours is one of those, change
-// the exit code below to 1).
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GITHUB
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async function getLatestCommit() {
+    const url =
+        `https://api.github.com/repos/${repoOwner}/${repoName}/commits/${branch}`;
+
+    const response = await fetch(url, {
+        headers: {
+            'User-Agent': 'POPKID-MD-Updater',
+            'Accept': 'application/vnd.github+json'
+        }
+    });
+
+    if (!response.ok) {
+        throw new Error(`GitHub returned HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    return {
+        sha: data.sha,
+        message: (data.commit?.message || 'No commit message')
+            .split('\n')[0],
+        date:
+            data.commit?.committer?.date ||
+            data.commit?.author?.date ||
+            null
+    };
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// DOWNLOAD
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async function downloadUpdate(zipPath) {
+    const url =
+        `https://github.com/${repoOwner}/${repoName}/archive/refs/heads/${branch}.zip`;
+
+    const response = await fetch(url, {
+        headers: {
+            'User-Agent': 'POPKID-MD-Updater'
+        }
+    });
+
+    if (!response.ok) {
+        throw new Error(`Failed to download update: HTTP ${response.status}`);
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    if (!buffer.length) {
+        throw new Error('GitHub returned an empty update package.');
+    }
+
+    fs.writeFileSync(zipPath, buffer);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EXTRACT
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+function extractUpdate(zipPath, destination) {
+    let AdmZip;
+
+    try {
+        AdmZip = require('adm-zip');
+    } catch {
+        throw new Error(
+            'Missing dependency "adm-zip". Install it with: npm install adm-zip'
+        );
+    }
+
+    const zip = new AdmZip(zipPath);
+
+    zip.extractAllTo(destination, true);
+
+    const entries = fs.readdirSync(destination, {
+        withFileTypes: true
+    });
+
+    const directories = entries.filter(entry => entry.isDirectory());
+
+    if (directories.length !== 1) {
+        throw new Error('Invalid GitHub update archive structure.');
+    }
+
+    return path.join(destination, directories[0].name);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// VALIDATION
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+function validateUpdate(sourceRoot) {
+    const requiredFiles = [
+        'index.js',
+        'package.json'
+    ];
+
+    for (const file of requiredFiles) {
+        const fullPath = path.join(sourceRoot, file);
+
+        if (!fs.existsSync(fullPath)) {
+            throw new Error(
+                `Update validation failed: "${file}" is missing.`
+            );
+        }
+    }
+
+    const packageJsonPath = path.join(sourceRoot, 'package.json');
+
+    try {
+        JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    } catch {
+        throw new Error('Update contains an invalid package.json.');
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SAFE FILE SYNC
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+function syncDirectory(source, destination, relative = '') {
+
+    fs.mkdirSync(destination, {
+        recursive: true
+    });
+
+    const sourceEntries = fs.existsSync(source)
+        ? fs.readdirSync(source, { withFileTypes: true })
+        : [];
+
+    const destinationEntries = fs.existsSync(destination)
+        ? fs.readdirSync(destination, { withFileTypes: true })
+        : [];
+
+    // Remove files deleted from GitHub.
+    for (const entry of destinationEntries) {
+
+        const relativePath = path.join(relative, entry.name);
+
+        if (isProtected(relativePath)) {
+            continue;
+        }
+
+        const existsUpstream = sourceEntries.some(
+            item => item.name === entry.name
+        );
+
+        if (!existsUpstream) {
+            fs.rmSync(
+                path.join(destination, entry.name),
+                {
+                    recursive: true,
+                    force: true
+                }
+            );
+        }
+    }
+
+    // Copy/update files from GitHub.
+    for (const entry of sourceEntries) {
+
+        const relativePath = path.join(relative, entry.name);
+
+        if (isProtected(relativePath)) {
+            continue;
+        }
+
+        const sourcePath = path.join(source, entry.name);
+        const destinationPath = path.join(destination, entry.name);
+
+        if (entry.isDirectory()) {
+
+            syncDirectory(
+                sourcePath,
+                destinationPath,
+                relativePath
+            );
+
+        } else {
+
+            fs.mkdirSync(
+                path.dirname(destinationPath),
+                {
+                    recursive: true
+                }
+            );
+
+            fs.copyFileSync(
+                sourcePath,
+                destinationPath
+            );
+        }
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// RESTART
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 function restartBot() {
-    return new Promise((resolve) => {
-        const doExit = () => {
-            console.log('🔄 update: exiting so the panel restarts the process with the new code...');
-            // Small delay so the "update installed" message has time to send.
+    return new Promise(resolve => {
+
+        const exit = () => {
+
+            console.log(
+                '[UPDATE] Exiting for panel restart...'
+            );
+
             setTimeout(() => {
-                process.exit(0); // change to process.exit(1) if your panel only auto-restarts on failure
-            }, 500);
-            // We never actually resolve(true)/(false) meaningfully here since
-            // the process is ending, but resolve is called defensively in
-            // case exit is somehow prevented (e.g. an exit hook elsewhere).
-            resolve(true);
+                process.exit(0);
+            }, 1000);
+
+            resolve();
         };
 
         try {
+
             const server = global.__popkidServer;
+
             if (server && server.listening) {
-                server.close(() => doExit());
-                // Safety net: don't hang forever waiting for close() if some
-                // socket refuses to release.
-                setTimeout(doExit, 3000);
+
+                server.close(() => {
+                    exit();
+                });
+
+                setTimeout(exit, 5000);
+
             } else {
-                doExit();
+
+                exit();
+
             }
-        } catch (err) {
-            console.error('❌ update.js: error during restart, exiting anyway:', err.message);
-            doExit();
+
+        } catch (error) {
+
+            console.error(
+                '[UPDATE] Restart error:',
+                error.message
+            );
+
+            exit();
         }
     });
 }
 
-const { cmd } = require('../arslan');
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// UPDATE COMMAND
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 cmd({
-    pattern: "update",
+    pattern: 'update',
     name: 'update',
     category: 'Owner',
     aliases: ['upgrade', 'patch'],
-    description: 'Owner only — check GitHub and update the bot in place',
+    description: 'Update the bot from GitHub',
     filename: __filename
-}, async (sock, m, args) => {
-        // ── Owner-only gate ────────────────────────────────────────────────
-        if (!m.isOwner && !m.isDev) {
-            return m.reply('❌ This command is restricted to the bot owner.');
-        }
+}, async (sock, m) => {
 
-        if (isUpdateLocked()) {
-            return m.reply('⏳ An update is already running — please wait for it to finish.');
-        }
-        setUpdateLock(true);
+    // ── OWNER CHECK ─────────────────────────────────────────────────────
 
-        const loadingMsg = await m.reply('🔍 *Checking for updates...*');
+    if (!m.isOwner && !m.isDev) {
+        return m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗨𝗣𝗗𝗔𝗧𝗘* ◈
+┃
+┃❌ *𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗*
+┃➽ Owner only command.
+┃
+┗▣`);
+    }
 
-        const editOrSend = async (text) => {
+    // ── LOCK ─────────────────────────────────────────────────────────────
+
+    if (isUpdateLocked()) {
+        return m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗨𝗣𝗗𝗔𝗧𝗘* ◈
+┃
+┃⏳ *𝗨𝗣𝗗𝗔𝗧𝗘 𝗜𝗡 𝗣𝗥𝗢𝗚𝗥𝗘𝗦𝗦*
+┃➽ Please wait for it to finish.
+┃
+┗▣`);
+    }
+
+    setUpdateLock(true);
+
+    let loadingMessage;
+
+    try {
+
+        loadingMessage = await m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗨𝗣𝗗𝗔𝗧𝗘* ◈
+┃
+┃🔎 *𝗖𝗛𝗘𝗖𝗞𝗜𝗡𝗚 𝗙𝗢𝗥 𝗨𝗣𝗗𝗔𝗧𝗘𝗦...*
+┃➽ Please wait.
+┃
+┗▣`);
+
+        const updateMessage = async text => {
+
             try {
-                await sock.sendMessage(m.from, { text, edit: loadingMsg.key });
-            } catch (err) {
-                await sock.sendMessage(m.from, { text }, { quoted: m });
+
+                await sock.sendMessage(
+                    m.from,
+                    {
+                        text,
+                        edit: loadingMessage.key
+                    }
+                );
+
+            } catch {
+
+                await m.reply(text);
+
             }
         };
 
-        let tmpDir = null;
+        // ── CHECK GITHUB ────────────────────────────────────────────────
+
+        const latest = await getLatestCommit();
+        const localCommit = getLocalCommit();
+
+        if (localCommit && localCommit === latest.sha) {
+
+            setUpdateLock(false);
+
+            return updateMessage(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗨𝗣𝗗𝗔𝗧𝗘* ◈
+┃
+┃✅ *𝗬𝗢𝗨'𝗥𝗘 𝗨𝗣 𝗧𝗢 𝗗𝗔𝗧𝗘*
+┃
+┃➽ No new update is available.
+┃
+┃🔖 *𝗩𝗘𝗥𝗦𝗜𝗢𝗡* : ${latest.sha.slice(0, 7)}
+┃
+┗▣`);
+        }
+
+        const date = latest.date
+            ? new Date(latest.date).toLocaleString()
+            : 'Unknown';
+
+        await updateMessage(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗨𝗣𝗗𝗔𝗧𝗘* ◈
+┃
+┃🚀 *𝗨𝗣𝗗𝗔𝗧𝗘 𝗙𝗢𝗨𝗡𝗗*
+┃
+┃📝 *𝗖𝗛𝗔𝗡𝗚𝗘𝗦*
+┃➽ ${latest.message}
+┃
+┃📅 *𝗗𝗔𝗧𝗘* : ${date}
+┃🔖 *𝗖𝗢𝗠𝗠𝗜𝗧* : ${latest.sha.slice(0, 7)}
+┃
+┃📥 *𝗣𝗥𝗘𝗣𝗔𝗥𝗜𝗡𝗚 𝗨𝗣𝗗𝗔𝗧𝗘...*
+┃
+┗▣`);
+
+        // ── TEMP DIRECTORY ──────────────────────────────────────────────
+
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'popkid-update-')
+        );
 
         try {
-            // 1. Check latest commit
-            const latest = await getLatestCommit();
-            const localSha = getLocalCommit();
 
-            if (localSha && localSha === latest.sha) {
-                setUpdateLock(false);
-                return editOrSend('✅ Your bot is already up to date!');
-            }
-
-            const dateStr = latest.date ? new Date(latest.date).toLocaleString() : 'Unknown';
-            await editOrSend(
-                `🚀 *UPDATE FOUND!*\n\n` +
-                `📝 *Changes:* ${latest.message || 'No message provided'}\n` +
-                `📅 *Date:* ${dateStr}\n\n` +
-                `📥 Downloading and installing update...`
+            const zipPath = path.join(
+                tempDir,
+                'update.zip'
             );
 
-            // 2. Download + extract into a temp dir OUTSIDE the project
-            tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'popkid-update-'));
-            const zipPath = path.join(tmpDir, 'update.zip');
-            const extractDir = path.join(tmpDir, 'extracted');
-            fs.mkdirSync(extractDir, { recursive: true });
+            const extractPath = path.join(
+                tempDir,
+                'extracted'
+            );
 
-            await downloadZip(zipPath);
-            const srcRoot = extractZip(zipPath, extractDir);
+            fs.mkdirSync(extractPath, {
+                recursive: true
+            });
 
-            // 3. Validate BEFORE touching the real project
-            validateExtractedSource(srcRoot);
+            // ── DOWNLOAD ────────────────────────────────────────────────
 
-            // 4. Detect whether package.json actually changed
-            const oldPkgHash = fileHash(path.join(PROJECT_ROOT, 'package.json'));
-            const newPkgHash = fileHash(path.join(srcRoot, 'package.json'));
-            const dependenciesChanged = oldPkgHash !== newPkgHash;
+            await updateMessage(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗨𝗣𝗗𝗔𝗧𝗘* ◈
+┃
+┃📥 *𝗗𝗢𝗪𝗡𝗟𝗢𝗔𝗗𝗜𝗡𝗚...*
+┃➽ Getting latest files from GitHub.
+┃
+┗▣`);
 
-            // 5. Apply the update in place (protected paths are never touched)
-            await editOrSend('📦 Installing files...');
-            syncDirectory(srcRoot, PROJECT_ROOT);
+            await downloadUpdate(zipPath);
 
-            // 6. Install dependencies only if package.json actually changed
+            // ── EXTRACT ─────────────────────────────────────────────────
+
+            await updateMessage(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗨𝗣𝗗𝗔𝗧𝗘* ◈
+┃
+┃📦 *𝗘𝗫𝗧𝗥𝗔𝗖𝗧𝗜𝗡𝗚 𝗙𝗜𝗟𝗘𝗦...*
+┃➽ Preparing the new version.
+┃
+┗▣`);
+
+            const sourceRoot = extractUpdate(
+                zipPath,
+                extractPath
+            );
+
+            // ── VALIDATE ────────────────────────────────────────────────
+
+            await updateMessage(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗨𝗣𝗗𝗔𝗧𝗘* ◈
+┃
+┃🔍 *𝗩𝗔𝗟𝗜𝗗𝗔𝗧𝗜𝗡𝗚 𝗨𝗣𝗗𝗔𝗧𝗘...*
+┃➽ Checking package and project files.
+┃
+┗▣`);
+
+            validateUpdate(sourceRoot);
+
+            // ── PACKAGE CHECK ───────────────────────────────────────────
+
+            const oldPackage = fileHash(
+                path.join(PROJECT_ROOT, 'package.json')
+            );
+
+            const newPackage = fileHash(
+                path.join(sourceRoot, 'package.json')
+            );
+
+            const dependenciesChanged =
+                oldPackage !== newPackage;
+
+            // ── APPLY ───────────────────────────────────────────────────
+
+            await updateMessage(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗨𝗣𝗗𝗔𝗧𝗘* ◈
+┃
+┃📂 *𝗜𝗡𝗦𝗧𝗔𝗟𝗟𝗜𝗡𝗚 𝗙𝗜𝗟𝗘𝗦...*
+┃➽ Updating bot files.
+┃
+┃🛡️ Protected files remain untouched.
+┃
+┗▣`);
+
+            syncDirectory(
+                sourceRoot,
+                PROJECT_ROOT
+            );
+
+            // ── DEPENDENCIES ────────────────────────────────────────────
+
             if (dependenciesChanged) {
-                await editOrSend('🔧 Checking dependencies...\n📦 Installing (this may take a moment)...');
+
+                await updateMessage(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗨𝗣𝗗𝗔𝗧𝗘* ◈
+┃
+┃📦 *𝗨𝗣𝗗𝗔𝗧𝗜𝗡𝗚 𝗗𝗘𝗣𝗘𝗡𝗗𝗘𝗡𝗖𝗜𝗘𝗦...*
+┃➽ Please wait.
+┃
+┗▣`);
+
                 try {
-                    execSync('npm install --omit=dev', { cwd: PROJECT_ROOT, stdio: 'pipe' });
-                } catch (err) {
-                    // Files are already updated at this point — report but don't
-                    // pretend nothing happened. A manual `npm install` may be needed.
-                    console.error('❌ update.js: npm install failed:', err.message);
-                    await editOrSend(
-                        `⚠️ Files were updated, but dependency install failed:\n${err.message}\n\n` +
-                        `Run \`npm install\` manually, then restart the bot.`
+
+                    execSync(
+                        'npm install --omit=dev --no-audit --no-fund',
+                        {
+                            cwd: PROJECT_ROOT,
+                            stdio: 'pipe',
+                            timeout: 180000
+                        }
                     );
-                    setUpdateLock(false);
-                    return;
+
+                } catch (error) {
+
+                    throw new Error(
+                        `Dependency installation failed: ${error.message}`
+                    );
                 }
+
             }
 
-            // 7. Clean up temp files
-            fs.rmSync(tmpDir, { recursive: true, force: true });
-            tmpDir = null;
+            // ── SAVE COMMIT ─────────────────────────────────────────────
 
-            // 8. Save the new commit hash — only after a successful install
             saveLocalCommit(latest.sha);
 
-            // 9. Restart — hand control back to the panel's process
-            // supervisor by exiting cleanly. It relaunches the bot with the
-            // startup command, which now runs the newly-installed code.
-            await editOrSend(
-                '✅ *Update installed successfully!*\n🔄 Restarting bot (this may take a few seconds)...'
-            );
+        } finally {
 
-            await restartBot();
-            // process.exit() runs inside restartBot(); this line is not
-            // reached under normal operation.
-            setUpdateLock(false);
-
-        } catch (err) {
-            console.error('❌ update.js fatal error:', err);
-            if (tmpDir) {
-                try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
-            }
-            await editOrSend(`❌ Update failed, nothing was changed:\n${err.message}`);
-            setUpdateLock(false);
+            try {
+                fs.rmSync(
+                    tempDir,
+                    {
+                        recursive: true,
+                        force: true
+                    }
+                );
+            } catch {}
         }
-    });
+
+        // ── SUCCESS ─────────────────────────────────────────────────────
+
+        await updateMessage(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗨𝗣𝗗𝗔𝗧𝗘* ◈
+┃
+┃✅ *𝗨𝗣𝗗𝗔𝗧𝗘 𝗖𝗢𝗠𝗣𝗟𝗘𝗧𝗘*
+┃
+┃🔖 *𝗩𝗘𝗥𝗦𝗜𝗢𝗡* : ${latest.sha.slice(0, 7)}
+┃
+┃🛡️ *𝗣𝗥𝗢𝗧𝗘𝗖𝗧𝗘𝗗 𝗗𝗔𝗧𝗔*
+┃➽ Sessions and configuration preserved.
+┃
+┃🔄 *𝗥𝗘𝗦𝗧𝗔𝗥𝗧𝗜𝗡𝗚...*
+┃➽ The panel will start the updated bot.
+┃
+┗▣`);
+
+        setUpdateLock(false);
+
+        await restartBot();
+
+    } catch (error) {
+
+        console.error(
+            '[POPKID UPDATE ERROR]',
+            error
+        );
+
+        setUpdateLock(false);
+
+        const errorMessage =
+            error?.message || 'Unknown update error';
+
+        try {
+
+            if (loadingMessage) {
+
+                await sock.sendMessage(
+                    m.from,
+                    {
+                        text: `┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗨𝗣𝗗𝗔𝗧𝗘* ◈
+┃
+┃❌ *𝗨𝗣𝗗𝗔𝗧𝗘 𝗙𝗔𝗜𝗟𝗘𝗗*
+┃
+┃➽ ${errorMessage}
+┃
+┃🛡️ *𝗡𝗢 𝗥𝗘𝗦𝗧𝗔𝗥𝗧 𝗪𝗔𝗦 𝗧𝗥𝗜𝗚𝗚𝗘𝗥𝗘𝗗.*
+┃
+┗▣`,
+                        edit: loadingMessage.key
+                    }
+                );
+
+            } else {
+
+                await m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗨𝗣𝗗𝗔𝗧𝗘* ◈
+┃
+┃❌ *𝗨𝗣𝗗𝗔𝗧𝗘 𝗙𝗔𝗜𝗟𝗘𝗗*
+┃
+┃➽ ${errorMessage}
+┃
+┗▣`);
+
+            }
+
+        } catch (sendError) {
+
+            console.error(
+                '[POPKID UPDATE MESSAGE ERROR]',
+                sendError.message
+            );
+        }
+    }
+});
