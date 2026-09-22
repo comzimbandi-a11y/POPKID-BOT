@@ -84,15 +84,15 @@ async function downloadMp3(videoUrl) {
 }
 
 cmd({
-    pattern: 'play',
+    pattern: 'play2',
     name: 'play',
     category: 'Downloader',
     aliases: [
-        'music',
-        'song',
-        'ytmp3',
-        'ytsong',
-        'ytaudio'
+        'music2',
+        'song2',
+        '2ytmp3',
+        'ytsong2',
+        'ytaudio2'
     ],
     description: 'Search and download music from YouTube',
     filename: __filename
