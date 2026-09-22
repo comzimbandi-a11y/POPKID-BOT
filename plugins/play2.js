@@ -1,206 +1,187 @@
-const { createDecipheriv } = require('crypto');
-const yts = require('yt-search');
+'use strict';
+
+const axios = require('axios');
+const playdl = require('play-dl');
 const { cmd } = require('../arslan');
 
-const METADATA_DECRYPTION_KEY = Buffer.from(
-  'C5D58EF67A7584E4A29F6C35BBC4EB12',
-  'hex'
-);
+const BASE = 'https://apis.davidcyriltech.my.id';
 
-const HEADERS = {
-  'Content-Type': 'application/json',
-  Origin: 'https://yt.savetube.me',
-  'User-Agent': 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/130 Mobile Safari/537.36'
-};
+async function searchYoutube(query) {
+    const isUrl =
+        /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)/i.test(query);
 
-// ─── Main download logic (unchanged) ───────────────────────────────
+    // YouTube URL
+    if (isUrl) {
+        try {
+            const info = await playdl.video_info(query);
+            const d = info.video_details;
 
-async function savetube(url, { downloadType = 'audio', quality = '128kbps' } = {}) {
-  const idMatch = url.match(
-    /(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|shorts\/|embed\/))([a-zA-Z0-9_-]{11})/
-  );
+            return {
+                url: query,
+                title: d.title || 'Unknown',
+                artist: d.channel?.name || 'Unknown',
+                thumbnail: d.thumbnails?.slice(-1)[0]?.url || '',
+                duration: d.durationRaw || ''
+            };
+        } catch {}
 
-  if (!idMatch) throw 'Invalid YouTube URL';
+        const id = query.match(
+            /(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/
+        )?.[1];
 
-  const videoId = idMatch[1];
-
-  const cdnRes = await fetch('https://media.savetube.vip/api/random-cdn', {
-    headers: HEADERS
-  }).then(v => v.json()).catch(() => null);
-
-  if (!cdnRes?.cdn) throw 'CDN tidak available';
-
-  const cdn = cdnRes.cdn;
-
-  const info = await fetch(`https://${cdn}/v2/info`, {
-    method: 'POST',
-    headers: HEADERS,
-    body: JSON.stringify({
-      url: 'https://www.youtube.com/watch?v=' + videoId
-    })
-  }).then(v => v.json()).catch(() => null);
-
-  if (!info?.data) throw 'Metadata empty';
-
-  let metadata;
-
-  try {
-    const encrypted = Buffer.from(info.data, 'base64');
-
-    const decipher = createDecipheriv(
-      'aes-128-cbc',
-      METADATA_DECRYPTION_KEY,
-      encrypted.subarray(0, 16)
-    );
-
-    const decrypted = Buffer.concat([
-      decipher.update(encrypted.subarray(16)),
-      decipher.final()
-    ]);
-
-    metadata = JSON.parse(decrypted.toString('utf8'));
-  } catch {
-    throw 'Decrypt metadata failed';
-  }
-
-  if (!metadata?.key) throw 'Key download not found';
-
-  const dl = await fetch(`https://${cdn}/download`, {
-    method: 'POST',
-    headers: HEADERS,
-    body: JSON.stringify({
-      id: videoId,
-      downloadType,
-      quality,
-      key: metadata.key
-    })
-  }).then(v => v.json()).catch(() => null);
-
-  if (!dl?.data?.downloadUrl)
-    throw dl?.message || 'Download failed';
-
-  return {
-    title: metadata.title,
-    duration: metadata.durationLabel,
-    thumbnail: metadata.thumbnail,
-    url: dl.data.downloadUrl
-  };
-}
-
-async function savetubeRetry(url, opts, retry = 3) {
-  let lastErr;
-
-  for (let i = 0; i < retry; i++) {
-    try {
-      return await savetube(url, opts);
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-
-  throw lastErr;
-}
-
-// ─── Plugin wrapper (converted to arslan cmd() style) ──────────────
-
-cmd({
-    pattern: "play2",
-    name: 'play2',
-    category: 'Downloaders',
-    aliases: ['ply2'],
-    description: 'Search and play/download a song from YouTube (alt source)',
-    filename: __filename
-}, async (sock, m, args) => {
-
-    const text = args.join(' ');
-    const usedPrefix = m.prefix || '.';
-    const command = 'play2';
-
-    if (!text)
-        throw `Example:\n${usedPrefix + command} chase atlantic`;
-
-    await m.react('🎧');
-
-    let url = text;
-
-    if (!/youtube\.com|youtu\.be/i.test(text)) {
-        const search = await yts(text);
-
-        if (!search?.videos?.length)
-            throw 'Song not found';
-
-        url = search.videos[0].url;
+        return {
+            url: query,
+            title: 'Unknown',
+            artist: 'Unknown',
+            thumbnail: id
+                ? `https://img.youtube.com/vi/${id}/hqdefault.jpg`
+                : '',
+            duration: ''
+        };
     }
 
-    const detail = await yts(url);
-    const vid = detail?.videos?.[0];
+    // Search YouTube
+    const results = await playdl.search(query, {
+        source: { youtube: 'video' },
+        limit: 1
+    });
 
-    if (!vid)
-        throw 'Video not found';
+    if (!results?.length) {
+        throw new Error('No results found for: ' + query);
+    }
 
-    const ytUrl = vid.url || url;
-    const invisible = '\u200B'.repeat(400);
+    const v = results[0];
 
-    const caption = `
-┈─ ◦ now playing ◦ ─┈
+    return {
+        url: v.url,
+        title: v.title || 'Unknown',
+        artist: v.channel?.name || 'Unknown',
+        thumbnail: v.thumbnails?.slice(-1)[0]?.url || '',
+        duration: v.durationRaw || ''
+    };
+}
 
-🎵 ${vid.title}
-
-⏱️ ${vid.timestamp || '-'}
-👁️ ${Number(vid.views || 0).toLocaleString('id-ID')}
-📆 ${vid.ago || '-'}
-
-⏳ currently mengambil audio...
-`.trim();
-
-    await sock.sendMessage(
-        m.from,
+async function downloadMp3(videoUrl) {
+    const { data } = await axios.get(
+        `${BASE}/download/ytmp3?url=${encodeURIComponent(videoUrl)}`,
         {
-            text: `${ytUrl}${invisible}
-
-${caption}`,
-            contextInfo: {
-                externalAdReply: {
-                    title: vid.title,
-                    body: `🎧 ${vid.timestamp || 'Audio'}`,
-                    thumbnailUrl: vid.thumbnail,
-                    sourceUrl: ytUrl,
-                    mediaType: 1,
-                    renderLargerThumbnail: true
-                }
-            }
+            timeout: 30000
         }
     );
 
+    const link =
+        data?.result?.download_url ||
+        data?.result?.downloadUrl ||
+        data?.result?.url ||
+        data?.url ||
+        data?.link;
+
+    if (!link) {
+        throw new Error('No download link returned by API');
+    }
+
+    return link;
+}
+
+cmd({
+    pattern: 'play',
+    name: 'play',
+    category: 'Downloader',
+    aliases: [
+        'music',
+        'song',
+        'ytmp3',
+        'ytsong',
+        'ytaudio'
+    ],
+    description: 'Search and download music from YouTube',
+    filename: __filename
+}, async (sock, m, args) => {
+
+    const query = args.join(' ').trim();
+
+    if (!query) {
+        return m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗣𝗟𝗔𝗬* ◈
+┃
+┃🎵 *𝗨𝗦𝗔𝗚𝗘*
+┃➽ ${global.BOT_PREFIX}play <song name>
+┃
+┃📌 *𝗘𝗫𝗔𝗠𝗣𝗟𝗘*
+┃➽ ${global.BOT_PREFIX}play Blinding Lights
+┃
+┗▣`);
+    }
+
+    await m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗣𝗟𝗔𝗬* ◈
+┃
+┃🔍 *𝗦𝗘𝗔𝗥𝗖𝗛𝗜𝗡𝗚*
+┃
+┃➽ ${query}
+┃
+┃⏳ Please wait...
+┃
+┗▣`);
+
     try {
-        const audio = await savetubeRetry(url, {
-            downloadType: 'audio',
-            quality: '128kbps'
+        const track = await searchYoutube(query);
+
+        await sock.sendMessage(m.from, {
+            image: {
+                url: track.thumbnail ||
+                    'https://files.catbox.moe/5uli5p.jpeg'
+            },
+            caption: `┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗠𝗨𝗦𝗜𝗖* ◈
+┃
+┃🎵 *𝗧𝗜𝗧𝗟𝗘* : ${track.title}
+┃🎤 *𝗔𝗥𝗧𝗜𝗦𝗧* : ${track.artist}
+┃⏱️ *𝗗𝗨𝗥𝗔𝗧𝗜𝗢𝗡* : ${track.duration || 'Unknown'}
+┃
+┃⬇️ *𝗗𝗢𝗪𝗡𝗟𝗢𝗔𝗗𝗜𝗡𝗚...*
+┃
+┗▣`
+        }, {
+            quoted: m
         });
 
-        await sock.sendMessage(
-            m.from,
-            {
-                audio: {
-                    url: audio.url
-                },
-                mimetype: 'audio/mpeg',
-                fileName: `${audio.title}.mp3`,
-                ptt: false
-            }
-        );
+        const audioUrl = await downloadMp3(track.url);
 
-        await m.react('✅');
-    } catch (e) {
-        console.error(e);
+        // Send audio
+        await sock.sendMessage(m.from, {
+            audio: {
+                url: audioUrl
+            },
+            mimetype: 'audio/mpeg',
+            ptt: false
+        }, {
+            quoted: m
+        });
 
-        await m.react('❌');
+        // Send MP3 document
+        const safeName =
+            track.title
+                .replace(/[^\w\s-]/g, '')
+                .trim()
+                .slice(0, 50) || 'POPKID-MUSIC';
 
-        await sock.sendMessage(
-            m.from,
-            {
-                text: '❌ Audio failed diambil, coba lagi nanti.'
-            }
-        );
+        await sock.sendMessage(m.from, {
+            document: {
+                url: audioUrl
+            },
+            mimetype: 'audio/mpeg',
+            fileName: `${safeName}.mp3`
+        }, {
+            quoted: m
+        });
+
+    } catch (err) {
+        console.error('❌ Play command error:', err);
+
+        await m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗣𝗟𝗔𝗬* ◈
+┃
+┃❌ *𝗗𝗢𝗪𝗡𝗟𝗢𝗔𝗗 𝗙𝗔𝗜𝗟𝗘𝗗*
+┃
+┃➽ ${err.message || 'Something went wrong'}
+┃
+┗▣`);
     }
 });
