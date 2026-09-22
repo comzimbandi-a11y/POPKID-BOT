@@ -12,7 +12,7 @@ cmd({
 }, async (sock, m) => {
         try {
             const owners = [
-                ['254100853391@s.whatsapp.net', 'Abraham']
+                ['254100853391@s.whatsapp.net', 'POPKID']
             ];
 
             const contacts = owners.map(([id, name]) => ({
