@@ -8,33 +8,61 @@ cmd({
     description: 'Tag everyone in the group',
     filename: __filename
 }, async (sock, m) => {
-        if (!m.isGroup) {
-            return await m.reply('ᴛʜɪs ᴄᴏᴍᴍᴀɴᴅ ᴄᴀɴ ᴏɴʟʏ ʙᴇ ᴜsᴇᴅ ɪɴ ɢʀᴏᴜᴘs!')
-        }
 
-        if (!m.isOwner && !m.isAdmin) {
-            return await m.reply('ᴏɴʟʏ ɢʀᴏᴜᴘ ᴀᴅᴍɪɴs ᴏʀ ᴏᴡɴᴇʀs ᴄᴀɴ ᴜsᴇ ᴛʜɪs ᴄᴏᴍᴍᴀɴᴅ!')
-        }
+    if (!m.isGroup) {
+        return await m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗧𝗔𝗚𝗔𝗟𝗟* ◈
+┃
+┃❌ *𝗚𝗥𝗢𝗨𝗣 𝗢𝗡𝗟𝗬*
+┃
+┃➽ This command can only
+┃   be used in groups.
+┃
+┗▣`);
+    }
 
-        const participants = Array.isArray(m.groupMetadata?.participants)
-            ? m.groupMetadata.participants.map(p => p.id)
-            : []
+    if (!m.isOwner && !m.isAdmin) {
+        return await m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗧𝗔𝗚𝗔𝗟𝗟* ◈
+┃
+┃❌ *𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗*
+┃
+┃➽ Only group admins
+┃   or the bot owner can
+┃   use this command.
+┃
+┗▣`);
+    }
 
-        if (!participants.length) {
-            return await m.reply('❌ Nᴏ ɢʀᴏᴜᴘ ᴘᴀʀᴛɪᴄɪᴘᴀɴᴛs ғᴏᴜɴᴅ.')
-        }
+    const participants = Array.isArray(m.groupMetadata?.participants)
+        ? m.groupMetadata.participants.map(p => p.id)
+        : [];
 
-        const mentionText = participants
-            .map(p => `@${p.split('@')[0]}`)
-            .join('\n')
+    if (!participants.length) {
+        return await m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗧𝗔𝗚𝗔𝗟𝗟* ◈
+┃
+┃❌ *𝗡𝗢 𝗠𝗘𝗠𝗕𝗘𝗥𝗦 𝗙𝗢𝗨𝗡𝗗*
+┃
+┃➽ Unable to find group
+┃   participants.
+┃
+┗▣`);
+    }
 
-        const message = `👋 ʜᴇʟʟᴏ ᴇᴠᴇʀʏᴏɴᴇ!
-ʜᴇʀᴇ ᴀʀᴇ ᴛʜᴇ ɢʀᴏᴜᴘ ᴍᴇᴍʙᴇʀs:
+    const mentionText = participants
+        .map(p => `@${p.split('@')[0]}`)
+        .join('\n');
 
-${mentionText}`
+    const message = `┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗧𝗔𝗚𝗔𝗟𝗟* ◈
+┃
+┃👋 *𝗛𝗘𝗟𝗟𝗢 𝗘𝗩𝗘𝗥𝗬𝗢𝗡𝗘!*
+┃
+┃𝗚𝗥𝗢𝗨𝗣 𝗠𝗘𝗠𝗕𝗘𝗥𝗦:
+┃
+${mentionText}
+┃
+┗▣`;
 
-        await m.send({
-            text: message,
-            mentions: participants
-        })
+    await m.send({
+        text: message,
+        mentions: participants
     });
+});
