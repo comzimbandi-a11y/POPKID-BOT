@@ -1,128 +1,218 @@
-'use strict';
-
 const fs = require('fs');
 const path = require('path');
 const { cmd } = require('../arslan');
 
-const DATA_DIR = path.join(__dirname, '../data');
-const MODE_PATH = path.join(DATA_DIR, 'bot-mode.json');
+const DATA_DIR = path.join(process.cwd(), 'data');
+const MODE_FILE = path.join(DATA_DIR, 'bot-mode.json');
 
-const DEFAULT_SETTINGS = {
-    mode: 'public'
-};
-
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   SETTINGS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+}
 
 function loadMode() {
     try {
-        if (!fs.existsSync(DATA_DIR)) {
-            fs.mkdirSync(DATA_DIR, { recursive: true });
-        }
-
-        if (!fs.existsSync(MODE_PATH)) {
+        if (!fs.existsSync(MODE_FILE)) {
             fs.writeFileSync(
-                MODE_PATH,
-                JSON.stringify(DEFAULT_SETTINGS, null, 2)
+                MODE_FILE,
+                JSON.stringify({ mode: 'public' }, null, 2)
             );
-
-            return { ...DEFAULT_SETTINGS };
+            return 'public';
         }
 
         const data = JSON.parse(
-            fs.readFileSync(MODE_PATH, 'utf8')
+            fs.readFileSync(MODE_FILE, 'utf8')
         );
 
-        return {
-            ...DEFAULT_SETTINGS,
-            ...data,
-            mode: ['public', 'private'].includes(data.mode)
-                ? data.mode
-                : 'public'
-        };
-
-    } catch (error) {
-        console.error('[POPKID MODE] Load error:', error);
-        return { ...DEFAULT_SETTINGS };
+        return data.mode === 'private' ? 'private' : 'public';
+    } catch (err) {
+        return 'public';
     }
 }
 
-function saveMode(settings) {
-    try {
-        if (!fs.existsSync(DATA_DIR)) {
-            fs.mkdirSync(DATA_DIR, { recursive: true });
-        }
-
-        fs.writeFileSync(
-            MODE_PATH,
-            JSON.stringify(settings, null, 2)
-        );
-
-        return true;
-    } catch (error) {
-        console.error('[POPKID MODE] Save error:', error);
-        return false;
-    }
+function saveMode(mode) {
+    fs.writeFileSync(
+        MODE_FILE,
+        JSON.stringify({ mode }, null, 2)
+    );
 }
 
-const settings = loadMode();
+function normalizeJid(jid) {
+    if (!jid) return '';
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   MODE CHECK
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+    return jid
+        .split('@')[0]
+        .split(':')[0]
+        .replace(/[^\d]/g, '');
+}
 
 function isOwner(jid) {
+    const sender = normalizeJid(jid);
+
     return Array.isArray(global.owners) &&
-           global.owners.includes(jid);
+        global.owners.some(owner =>
+            normalizeJid(owner) === sender
+        );
 }
 
-function canUseBot(jid) {
-    if (settings.mode === 'public') {
-        return true;
-    }
+let currentMode = loadMode();
 
-    return isOwner(jid);
+global.botMode = currentMode;
+
+/*
+|--------------------------------------------------------------------------
+| PRIVATE MODE PROTECTION
+|--------------------------------------------------------------------------
+| Your index.js does:
+|
+| const plugin = plugins.get(commandName)
+| await plugin.execute(...)
+|
+| We intercept .get() here, so index.js does not need to be modified.
+|--------------------------------------------------------------------------
+*/
+
+function installModeProtection() {
+    if (!global.plugins) return;
+
+    const plugins = global.plugins;
+
+    if (plugins.__popkidModeProtection) return;
+
+    const originalGet = plugins.get.bind(plugins);
+
+    plugins.get = function (commandName) {
+        const plugin = originalGet(commandName);
+
+        if (!plugin) return plugin;
+
+        // Don't wrap the mode command itself
+        if (
+            plugin.__popkidModeWrapped ||
+            commandName === 'mode'
+        ) {
+            return plugin;
+        }
+
+        const originalExecute = plugin.execute;
+
+        if (typeof originalExecute !== 'function') {
+            return plugin;
+        }
+
+        const wrappedPlugin = Object.create(plugin);
+
+        wrappedPlugin.execute = async function (sock, m, args) {
+
+            if (
+                currentMode === 'private' &&
+                !isOwner(m.sender)
+            ) {
+                return m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗣𝗥𝗜𝗩𝗔𝗧𝗘* ◈
+┃
+┃🔒 *𝗕𝗢𝗧 𝗜𝗦 𝗣𝗥𝗜𝗩𝗔𝗧𝗘*
+┃
+┃➽ You are not authorized
+┃   to use this bot.
+┃
+┃👑 *OWNER ONLY*
+┃
+┗▣`);
+            }
+
+            return originalExecute.call(
+                this,
+                sock,
+                m,
+                args
+            );
+        };
+
+        wrappedPlugin.__popkidModeWrapped = true;
+
+        return wrappedPlugin;
+    };
+
+    plugins.__popkidModeProtection = true;
 }
-
-/* Make mode available globally */
-global.botMode = settings.mode;
-global.canUseBot = canUseBot;
-
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   MODE COMMAND
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 
 cmd({
-    pattern: "mode",
-    name: "mode",
-    category: "Admin",
-    aliases: ["botmode"],
-    description: "Switch bot between public and private mode",
+    pattern: 'mode',
+    name: 'mode',
+    category: 'Admin',
+    aliases: ['botmode'],
+    description: 'Switch bot between public and private mode',
     filename: __filename
 }, async (sock, m, args) => {
 
-    /* Only owners can change mode */
     if (!isOwner(m.sender)) {
-        return;
+        return m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗠𝗢𝗗𝗘* ◈
+┃
+┃❌ *𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗*
+┃
+┃➽ Only the bot owner
+┃   can change bot mode.
+┃
+┗▣`);
     }
 
-    const action = (args[0] || '').toLowerCase();
+    const action = (args[0] || 'status').toLowerCase();
 
-    /* ━━━━━━━━━━━━━━━━━━━━━━━
-       STATUS
-    ━━━━━━━━━━━━━━━━━━━━━━━ */
+    // PUBLIC
+    if (action === 'public' || action === 'on') {
 
-    if (!action || action === 'status') {
+        currentMode = 'public';
+        global.botMode = 'public';
+        saveMode('public');
 
         return m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗠𝗢𝗗𝗘* ◈
 ┃
-┃⚙️ *𝗖𝗨𝗥𝗥𝗘𝗡𝗧* : ${settings.mode.toUpperCase()}
+┃🌐 *PUBLIC MODE*
 ┃
-┃${settings.mode === 'public'
-    ? '🌐 *Everyone can use the bot.*'
-    : '🔒 *Only owners can use the bot.*'}
+┃➽ Everyone can use
+┃   the bot commands.
 ┃
+┃🟢 *STATUS* : PUBLIC
+┃
+┗▣`);
+    }
+
+    // PRIVATE
+    if (action === 'private' || action === 'off') {
+
+        currentMode = 'private';
+        global.botMode = 'private';
+        saveMode('private');
+
+        return m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗠𝗢𝗗𝗘* ◈
+┃
+┃🔒 *PRIVATE MODE*
+┃
+┃➽ Only the bot owner
+┃   can use commands.
+┃
+┃🔴 *STATUS* : PRIVATE
+┃
+┗▣`);
+    }
+
+    // STATUS
+    if (
+        action === 'status' ||
+        action === 'check'
+    ) {
+
+        const status =
+            currentMode === 'private'
+                ? '🔒 PRIVATE'
+                : '🌐 PUBLIC';
+
+        return m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗠𝗢𝗗𝗘* ◈
+┃
+┃⚙️ *BOT MODE*
+┃
+┃➽ *STATUS* : ${status}
+┃
+┃📌 *COMMANDS*
 ┃➽ .mode public
 ┃➽ .mode private
 ┃➽ .mode status
@@ -130,57 +220,9 @@ cmd({
 ┗▣`);
     }
 
-    /* ━━━━━━━━━━━━━━━━━━━━━━━
-       PUBLIC
-    ━━━━━━━━━━━━━━━━━━━━━━━ */
-
-    if (action === 'public') {
-
-        settings.mode = 'public';
-
-        saveMode(settings);
-
-        global.botMode = 'public';
-
-        return m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗠𝗢𝗗𝗘* ◈
-┃
-┃🌐 *𝗣𝗨𝗕𝗟𝗜𝗖 𝗠𝗢𝗗𝗘*
-┃
-┃🟢 *𝗦𝗧𝗔𝗧𝗨𝗦* : 𝗘𝗡𝗔𝗕𝗟𝗘𝗗
-┃➽ Everyone can use the bot.
-┃
-┗▣`);
-    }
-
-    /* ━━━━━━━━━━━━━━━━━━━━━━━
-       PRIVATE
-    ━━━━━━━━━━━━━━━━━━━━━━━ */
-
-    if (action === 'private') {
-
-        settings.mode = 'private';
-
-        saveMode(settings);
-
-        global.botMode = 'private';
-
-        return m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗠𝗢𝗗𝗘* ◈
-┃
-┃🔒 *𝗣𝗥𝗜𝗩𝗔𝗧𝗘 𝗠𝗢𝗗𝗘*
-┃
-┃🔴 *𝗦𝗧𝗔𝗧𝗨𝗦* : 𝗘𝗡𝗔𝗕𝗟𝗘𝗗
-┃➽ Only owners can use the bot.
-┃
-┗▣`);
-    }
-
-    /* ━━━━━━━━━━━━━━━━━━━━━━━
-       INVALID
-    ━━━━━━━━━━━━━━━━━━━━━━━ */
-
     return m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗠𝗢𝗗𝗘* ◈
 ┃
-┃❌ *𝗜𝗡𝗩𝗔𝗟𝗜𝗗 𝗠𝗢𝗗𝗘*
+┃📖 *USAGE*
 ┃
 ┃➽ .mode public
 ┃➽ .mode private
@@ -189,24 +231,21 @@ cmd({
 ┗▣`);
 });
 
-
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   EXPORT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+// Install protection after the command has registered.
+installModeProtection();
 
 module.exports = {
-    getMode: () => settings.mode,
+    getMode: () => currentMode,
 
     setMode: (mode) => {
-        if (!['public', 'private'].includes(mode)) {
+        if (mode !== 'public' && mode !== 'private') {
             return false;
         }
 
-        settings.mode = mode;
+        currentMode = mode;
         global.botMode = mode;
+        saveMode(mode);
 
-        return saveMode(settings);
-    },
-
-    canUseBot
+        return true;
+    }
 };
