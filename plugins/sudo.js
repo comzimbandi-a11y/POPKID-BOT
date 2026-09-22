@@ -32,17 +32,34 @@ function cleanJid(jid) {
 
     const number = jid
         .split('@')[0]
+        .split(':')[0]
         .replace(/[^\d]/g, '');
 
     return number ? `${number}@s.whatsapp.net` : null;
 }
 
-function isOwner(jid) {
-    const owners = Array.isArray(global.owners)
-        ? global.owners
-        : [];
+// FIX: normalize both sides (strip @lid/@s.whatsapp.net suffix, strip
+// :device suffix, keep only digits) before comparing. Previously this
+// did a raw owners.includes(jid) exact-string match, which almost never
+// matched because global.owners stores sock.user.id WITH the device
+// suffix (e.g. 2547...:31@s.whatsapp.net) while m.sender is bare
+// (2547...@s.whatsapp.net) — so the real owner was always denied.
+function normalizeJid(jid) {
+    if (!jid) return '';
 
-    return owners.includes(jid);
+    return jid
+        .split('@')[0]
+        .split(':')[0]
+        .replace(/[^\d]/g, '');
+}
+
+function isOwner(jid) {
+    const sender = normalizeJid(jid);
+
+    return Array.isArray(global.owners) &&
+        global.owners.some(owner =>
+            normalizeJid(owner) === sender
+        );
 }
 
 function getTarget(m, args) {
