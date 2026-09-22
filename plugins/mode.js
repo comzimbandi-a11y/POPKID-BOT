@@ -45,13 +45,40 @@ function normalizeJid(jid) {
         .replace(/[^\d]/g, '');
 }
 
-function isOwner(jid) {
+function isOwnerSync(jid) {
     const sender = normalizeJid(jid);
 
     return Array.isArray(global.owners) &&
         global.owners.some(owner =>
             normalizeJid(owner) === sender
         );
+}
+
+// FIX: WhatsApp sometimes reports m.sender as an @lid (linked-device id)
+// instead of the real @s.whatsapp.net phone number. normalizeJid alone
+// can't fix that — an @lid's digits are NOT the phone number, so a plain
+// digit-strip comparison against global.owners will never match, and the
+// real owner gets locked out under private mode. When the sync check
+// fails and the JID looks like an @lid, try to resolve it via Baileys'
+// own lid-mapping store (same approach already used in index.js for
+// status reactions) before giving up.
+async function isOwner(sock, jid) {
+    if (isOwnerSync(jid)) return true;
+
+    if (!jid || !jid.endsWith('@lid') || !sock?.signalRepository?.lidMapping?.getPNForLID) {
+        return false;
+    }
+
+    try {
+        const pn = await sock.signalRepository.lidMapping.getPNForLID(jid);
+        if (pn && typeof pn === 'string') {
+            return isOwnerSync(pn);
+        }
+    } catch (err) {
+        // fall through
+    }
+
+    return false;
 }
 
 let currentMode = loadMode();
@@ -103,11 +130,10 @@ function installModeProtection() {
 
         wrappedPlugin.execute = async function (sock, m, args) {
 
-            if (
-                currentMode === 'private' &&
-                !isOwner(m.sender)
-            ) {
-                return m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗣𝗥𝗜𝗩𝗔𝗧𝗘* ◈
+            if (currentMode === 'private') {
+                const owner = await isOwner(sock, m.sender);
+                if (!owner) {
+                    return m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗣𝗥𝗜𝗩𝗔𝗧𝗘* ◈
 ┃
 ┃🔒 *𝗕𝗢𝗧 𝗜𝗦 𝗣𝗥𝗜𝗩𝗔𝗧𝗘*
 ┃
@@ -117,6 +143,7 @@ function installModeProtection() {
 ┃👑 *OWNER ONLY*
 ┃
 ┗▣`);
+                }
             }
 
             return originalExecute.call(
@@ -144,7 +171,7 @@ cmd({
     filename: __filename
 }, async (sock, m, args) => {
 
-    if (!isOwner(m.sender)) {
+    if (!(await isOwner(sock, m.sender))) {
         return m.reply(`┏▣ ◈ *𝗣𝗢𝗣𝗞𝗜𝗗 𝗠𝗢𝗗𝗘* ◈
 ┃
 ┃❌ *𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗*
