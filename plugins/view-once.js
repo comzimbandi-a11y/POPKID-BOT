@@ -1,7 +1,7 @@
 const { cmd } = require('../arslan');
 
 cmd({
-    pattern: "viewonce",
+    pattern: "vv",
     name: 'viewonce',
     category: 'Tools',
     description: 'Download view once messages',
