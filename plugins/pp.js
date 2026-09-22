@@ -1,7 +1,7 @@
 const { cmd } = require('../arslan');
 
 cmd({
-    pattern: "profilepic",
+    pattern: "getpp",
     name: 'profilepic',
     category: 'Tools',
     description: 'Get profile picture',
